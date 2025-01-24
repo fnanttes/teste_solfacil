@@ -1,107 +1,115 @@
-// Bibliotecas
 #Include "Totvs.ch"
 #Include "RESTFul.ch"
 
+//-------------------------------------------------------------------
 /*/{Protheus.doc} zWsPedidos
- * WebService para consulta de pedidos de venda
- * @author Filipe Ferreira da Silva Nantes
- * @since 24/01/2025
- * @version 1.1
- * @type function
- * @description Serviço RESTful para consulta de pedidos de venda na tabela SC5.
- * @obs Necessário autenticação via Bearer Token.
- * @response Retorna JSON com os dados do pedido, incluindo:
- * - filial
- * - número
- * - tipo
- * - cliente
- * - condição de pagamento
- * - valor total
- * - status
- * @error 400 - ID não informado.
- * @error 401 - Token inválido ou ausente.
- * @error 404 - Pedido não encontrado.
+@type WSRESTFUL
+@description WebService para consulta de pedidos de venda
+@author  Filipe F S Nantes
+@since   23/01/2025
+@version 1.1
 /*/
+//-------------------------------------------------------------------
 
-WSRESTFUL zWsPedidos DESCRIPTION 'WebService para consulta de pedidos de venda'
+WSRESTFUL zWsPedidos DESCRIPTION "WebService para consulta de pedidos de venda"
     // Atributos
-    WSDATA id AS STRING
+    WSDATA id AS STRING // Número do pedido (C5_NUM / C6_NUM)
+    WSDATA filial AS STRING // Filial do pedido (C5_FILIAL / C6_FILIAL)
+
     // Métodos
-    WSMETHOD GET ID DESCRIPTION 'Retorna o registro pesquisado' WSSYNTAX '/zWsPedidos/get_id?{id}' PATH 'get_id' PRODUCES APPLICATION_JSON
+    WSMETHOD GET ID DESCRIPTION "Retorna o status e os itens do pedido" WSSYNTAX "/zWsPedidos/get_id?{filial,id}" PATH "get_id" PRODUCES APPLICATION_JSON
 END WSRESTFUL
 
-/*/{Protheus.doc} GET ID
- * Busca registro via ID com autenticação e resiliência
- * @type method
- * @param id, Character, String que será pesquisada através do MsSeek
- * @param Authorization, Header, Bearer Token de autenticação
+//-------------------------------------------------------------------
+/*/{Protheus.doc} zWsPedidos.GET()
+@type WSMETHOD
+@description Retorna o status e os itens do pedido
+@author  Filipe F S Nantes
+@since   23/01/2025
+@version 1.7
 /*/
+//-------------------------------------------------------------------
 
-WSMETHOD GET ID WSRECEIVE id WSSERVICE zWsPedidos
+WSMETHOD GET ID WSRECEIVE filial, id WSSERVICE zWsPedidos
     Local lRet := .T.
     Local jResponse := JsonObject():New()
-    Local cAliasWS := 'SC5'
-    Local cBearerToken := Self:GetHeader("Authorization")
+    Local cAliasSC5 := "SC5"
+    Local cAliasSC6 := "SC6"
+    Local oItem
+    Local aItens := {}
 
-    // Validação do Bearer Token
-    If !ValidaToken(cBearerToken)
-        Self:setStatus(401)
-        jResponse['error'] := "Token inválido ou ausente"
-        jResponse['solution'] := "Forneça um token válido no header Authorization"
-        Self:SetResponse(EncodeUTF8(jResponse:toJSON()))
-        Return .F.
-    EndIf
-
-    // Validação do ID
-    If Empty(::id)
-        Self:setStatus(400)
-        jResponse['error'] := "ID do pedido não informado"
-        jResponse['solution'] := "Informe um ID válido no endpoint"
-        Self:SetResponse(EncodeUTF8(jResponse:toJSON()))
-        Return .F.
-    EndIf
-
-    // Busca o cabeçalho do pedido (SC5)
-    DbSelectArea(cAliasWS)
-    (cAliasWS)->(DbSetOrder(1)) // Define a ordem no índice do ID
-    Begin Sequence
-        If ! (cAliasWS)->(MsSeek(FWxFilial(cAliasWS) + ::id))
-            Self:setStatus(404)
-            jResponse['error'] := "Pedido não encontrado"
-            jResponse['solution'] := "Verifique se o ID informado está correto"
-        Else
-            // Preenche os dados do pedido no JSON
-            jResponse['filial'] := (cAliasWS)->C5_FILIAL
-            jResponse['num'] := (cAliasWS)->C5_NUM
-            jResponse['tipo'] := (cAliasWS)->C5_TIPO
-            jResponse['cliente'] := (cAliasWS)->C5_CLIENTE
-            jResponse['condpag'] := (cAliasWS)->C5_CONDPAG
-            jResponse['total'] := (cAliasWS)->C5_TOTAL
-            jResponse['status'] := (cAliasWS)->C5_STATUS
-            Self:setStatus(200)
-        EndIf
-        Recover
+    // Validação dos parâmetros
+    If Empty(::filial) .Or. Empty(::id)
         Self:setStatus(500)
-        jResponse['error'] := "Erro interno no servidor"
-        jResponse['solution'] := "Entre em contato com o suporte técnico"
-    End Sequence
+        jResponse["errorId"] := "ID001"
+        jResponse["error"] := "Filial ou número do pedido não informados"
+        jResponse["solution"] := "Informe a filial e o número do pedido para prosseguir"
+    Else
+        // Busca o status do pedido na SC5
+        DbSelectArea(cAliasSC5)
+        (cAliasSC5)->(DbSetOrder(1)) // Define a ordem na chave C5_FILIAL + C5_NUM
+        If !(cAliasSC5)->(MsSeek(::filial + ::id))
+            Self:setStatus(404)
+            jResponse["errorId"] := "ID003"
+            jResponse["error"] := "Pedido não encontrado"
+            jResponse["solution"] := "O pedido informado não foi encontrado na tabela SC5"
+        Else
+            // Adiciona o status do pedido ao JSON
+            jResponse["status"] := (cAliasSC5)->C5_STATUS
+            jResponse["filial"] := (cAliasSC5)->C5_FILIAL
+            jResponse["num"] := (cAliasSC5)->C5_NUM
+            jResponse["cliente"] := (cAliasSC5)->C5_CLIENTE
+
+            // Busca os itens do pedido na SC6
+            DbSelectArea(cAliasSC6)
+            (cAliasSC6)->(DbSetOrder(1)) // Define a ordem na chave C6_FILIAL + C6_NUM
+            (cAliasSC6)->(DbGoTop())
+
+            While !(cAliasSC6)->(EoF())
+                If (cAliasSC6)->C6_FILIAL + (cAliasSC6)->C6_NUM == ::filial + ::id
+                    oItem := JsonObject():New()
+                    oItem["filial"] := (cAliasSC6)->C6_FILIAL
+                    oItem["item"] := (cAliasSC6)->C6_ITEM
+                    oItem["produto"] := (cAliasSC6)->C6_PRODUTO
+                    oItem["descricao"] := (cAliasSC6)->C6_DESCRI
+                    oItem["quantidade"] := (cAliasSC6)->C6_QTDVEN
+                    oItem["unidade"] := (cAliasSC6)->C6_UM
+                    oItem["valor_unitario"] := (cAliasSC6)->C6_PRCVEN
+                    oItem["valor_total"] := (cAliasSC6)->C6_VALOR
+                    oItem["tes"] := (cAliasSC6)->C6_TES
+                    oItem["cf"] := (cAliasSC6)->C6_CF
+                    aAdd(aItens, oItem)
+                EndIf
+                (cAliasSC6)->(DbSkip())
+            EndDo
+
+            // Verifica se encontrou itens
+            If Len(aItens) == 0
+                Self:setStatus(404)
+                jResponse["errorId"] := "ID002"
+                jResponse["error"] := "Itens não encontrados"
+                jResponse["solution"] := "Não foram encontrados itens para o pedido informado"
+            Else
+                jResponse["itens"] := aItens
+
+                // Simula a integração com um serviço externo
+                jResponse["servico_externo"] := MockServicoExterno(::id)
+                Self:setStatus(200)
+            EndIf
+        EndIf
+    EndIf
 
     // Define o retorno
-    Self:SetContentType('application/json')
+    Self:SetContentType("application/json")
     Self:SetResponse(EncodeUTF8(jResponse:toJSON()))
 Return lRet
 
-/*/{Protheus.doc} ValidaToken
- * Função para validar o Bearer Token.
- * @type function
- * @param cToken, String, Token enviado no cabeçalho Authorization.
- * @response Boolean, Verdadeiro se o token for válido, Falso caso contrário.
- * @description Valida se o token fornecido é igual ao token esperado.
-/*/
+Static Function MockServicoExterno(cIdPedido)
+    Local oMockResponse := JsonObject():New()
 
-Static Function ValidaToken(cToken)
-    Local cExpectedToken := "Bearer 12345@ABCDE"
-    If Empty(cToken) .Or. cToken # cExpectedToken
-        Return .F.
-    EndIf
-Return .T.
+    // Simula a resposta do serviço externo
+    oMockResponse["id"] := cIdPedido
+    oMockResponse["status"] := "Aprovado"
+    oMockResponse["message"] := "Pedido encontrado no serviço externo"
+
+Return oMockResponse
