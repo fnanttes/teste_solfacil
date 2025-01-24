@@ -1,7 +1,7 @@
-# Teste Técnico - SolarFácil
+# Teste Técnico - SolFácil
 
 ## Descrição
-Este repositório contém a solução desenvolvida para o teste técnico da SolarFácil.  
+Este repositório contém a solução desenvolvida para o teste técnico da SolFácil.  
 O objetivo foi criar uma API REST no Protheus para consulta de **pedidos de venda**, com integração simulada a um serviço externo.
 
 ---
